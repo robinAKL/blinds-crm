@@ -2336,15 +2336,17 @@ def register(app, s):
             'uploaded_by','extraction_truncated','analysis_status','analysis_summary'
         )}
 
+    def published_knowledge(c):
+        pointer = c.execute('SELECT data FROM operations_records WHERE id=?', ('template-current',)).fetchone()
+        if pointer is None:
+            return None
+        current = prepare_knowledge_manifest(get(c, json.loads(pointer['data'])['template_id'], 'template'))
+        return {**current, 'active': True, 'knowledge_bindings': pricing_variable_map(current)}
+
     @app.get('/api/operations/pricing-knowledge')
     def pricing_knowledge(actor=Depends(s.require_admin)):
         with s.db() as c:
-            pointer=c.execute('SELECT data FROM operations_records WHERE id=?',('template-current',)).fetchone()
-            current=None
-            if pointer:
-                current=prepare_knowledge_manifest(get(c,json.loads(pointer['data'])['template_id'],'template'))
-                current.update(active=True)
-                current['knowledge_bindings']=pricing_variable_map(current)
+            current = published_knowledge(c)
             sources=[knowledge_source_card(source) for source in records(c,'pricing_knowledge_source')]
             drafts=records(c,'pricing_knowledge_draft')
             drafts=[{**(draft if draft.get('status')=='draft' else {**draft,'facts':[]}),
@@ -3814,3 +3816,55 @@ def register(app, s):
                 LEFT JOIN provider_templates pt ON op.template_id=pt.id
                 WHERE op.order_id=? ORDER BY op.is_preferred DESC,op.assigned_at
             ''',(oid,)).fetchall()]
+
+
+    from crm_mcp import register_crm_mcp
+
+    def mcp_search_orders(query, status, customer_id, limit, offset):
+        with s.db() as c:
+            orders = sorted(records(c, 'project'), key=lambda order: (order.get('created_at') or '', order['id']), reverse=True)
+            def matches(order):
+                if customer_id is not None and order['customer_id'] != customer_id:
+                    return False
+                if status and LEGACY_STATUS.get(order['status'], order['status']) != status:
+                    return False
+                return not query or any(query in str(order.get(field) or '').casefold()
+                                        for field in ('id', 'order_number', 'project_name', 'company'))
+
+            matched = [order for order in orders if matches(order)]
+            fields = ('id', 'order_number', 'project_name', 'company', 'customer_id',
+                      'payment_status', 'created_at', 'eta', 'total', 'currency')
+            items = [{**{field: order.get(field) for field in fields},
+                      'status': LEGACY_STATUS.get(order['status'], order['status'])}
+                     for order in matched[offset:offset + limit]]
+            return {'items': items, 'total': len(matched)}
+
+    def mcp_get_order(reference):
+        with s.db() as c:
+            row = c.execute("SELECT data FROM operations_records WHERE id=? AND kind='project'", (reference,)).fetchone()
+            if row:
+                return enrich(c, json.loads(row['data']))
+            matched = [order for order in records(c, 'project')
+                       if str(order.get('order_number') or '').casefold() == reference.casefold()]
+            if len(matched) > 1:
+                raise HTTPException(409, 'Multiple orders match; use the internal order ID')
+            if not matched:
+                raise HTTPException(404, 'Order not found')
+            return enrich(c, matched[0])
+
+    def mcp_current_knowledge():
+        with s.db() as c:
+            current = published_knowledge(c)
+            if current is None:
+                raise HTTPException(404, 'No published pricing knowledge')
+            return current
+
+    register_crm_mcp(
+        app, s, search_orders=mcp_search_orders, get_order=mcp_get_order,
+        current_knowledge=mcp_current_knowledge, customers=customers, invoices=invoices,
+        shipments=list_shipments, shipment_detail=shipment_detail, providers=list_providers,
+        order_providers=list_order_providers, lead_time=accepted_lead_time,
+        review=review, received=received, supplier_order=supplier_order, transit=transit,
+        fulfilment=fulfilment, shipment_arrive=shipment_arrive, shipment_eta=shipment_eta,
+        assign_provider=assign_provider,
+    )
