@@ -15,7 +15,19 @@ def main(folder):
                       VERA_STORAGE_BACKEND='local', VERA_MCP_TOKEN='test-only-' * 4,
                       VERA_MCP_USERNAME='dylan',
                       VERA_MCP_ALLOWED_ORIGINS='')
-    from service import app
+    import service
+    from crm_mcp import register_crm_mcp
+    from fastapi import FastAPI
+
+    partial_app = FastAPI()
+    partial_app.add_api_route('/api/health', service.health)
+    with patch.dict(os.environ, VERA_MCP_OAUTH_RESOURCE='https://vera.example.test/api/mcp'):
+        register_crm_mcp(partial_app, service)
+    with TestClient(partial_app) as partial_client:
+        assert partial_client.get('/api/health').status_code == 200
+        assert partial_client.get('/api/mcp').status_code == 404
+
+    app = service.app
 
     headers = {'Authorization': 'Bearer ' + os.environ['VERA_MCP_TOKEN'],
                'Accept': 'application/json, text/event-stream'}

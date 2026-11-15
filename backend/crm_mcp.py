@@ -81,7 +81,11 @@ class AuthenticatedTransport:
 
 
 def register_crm_mcp(app, crm, **operations):
-    oauth = configured_oauth()
+    try:
+        oauth = configured_oauth()
+    except ValueError:
+        LOGGER.error('MCP is disabled because its OAuth configuration is incomplete or invalid')
+        return
     server = FastMCP(
         'VERA CRM',
         instructions='Use search_orders to find an order and get_order to inspect its current state and line IDs.',
