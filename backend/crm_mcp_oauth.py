@@ -29,7 +29,26 @@ def https_url(value, name):
     return url
 
 
-class OAuthResource:
+@dataclass
+class ResourceMetadata:
+    resource: str
+    issuer: str
+    metadata_url: str
+
+    def metadata(self):
+        return {'resource': self.resource, 'authorization_servers': [self.issuer],
+                'scopes_supported': list(SCOPES), 'bearer_methods_supported': ['header']}
+
+    def challenge(self, scope=READ, error=None):
+        value = f'Bearer resource_metadata="{self.metadata_url}", scope="{scope}"'
+        if error == 'insufficient_scope':
+            return value + ', error="insufficient_scope", error_description="Additional CRM scope required"'
+        if error == 'invalid_token':
+            return value + ', error="invalid_token"'
+        return value
+
+
+class OAuthResource(ResourceMetadata):
     def __init__(self):
         self.resource = os.environ['VERA_MCP_OAUTH_RESOURCE']
         self.issuer = os.environ['VERA_MCP_OAUTH_ISSUER']
@@ -47,18 +66,6 @@ class OAuthResource:
         ):
             raise ValueError('VERA_MCP_OAUTH_SUBJECT_MAP must map provider subjects to CRM usernames')
         self.jwks = jwt.PyJWKClient(jwks_url, lifespan=60, timeout=5)
-
-    def metadata(self):
-        return {'resource': self.resource, 'authorization_servers': [self.issuer],
-                'scopes_supported': list(SCOPES), 'bearer_methods_supported': ['header']}
-
-    def challenge(self, scope=READ, error=None):
-        value = f'Bearer resource_metadata="{self.metadata_url}", scope="{scope}"'
-        if error == 'insufficient_scope':
-            return value + ', error="insufficient_scope", error_description="Additional CRM scope required"'
-        if error == 'invalid_token':
-            return value + ', error="invalid_token"'
-        return value
 
     def authenticate(self, token):
         try:
