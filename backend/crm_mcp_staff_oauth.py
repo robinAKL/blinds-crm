@@ -38,6 +38,7 @@ KNOWN_CLIENTS = {
     'https://chatgpt.com/connector_platform_oauth_redirect': 'ChatGPT',
     'https://claude.ai/api/mcp/auth_callback': 'Claude',
     'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback': 'Super Agent',
+    'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/oauth/callback': 'Super Agent',
 }
 TOKEN_CHARS = re.compile(r'[A-Za-z0-9_-]{43}')
 VERIFIER = re.compile(r'[A-Za-z0-9._~-]{43,128}')

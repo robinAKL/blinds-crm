@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 ORIGIN = 'https://vera.example.test'
 RESOURCE = ORIGIN + '/api/mcp'
 CALLBACK = 'https://claude.ai/api/mcp/auth_callback'
-SUPER_AGENT_CALLBACK = 'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback'
+SUPER_AGENT_CALLBACK = 'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/oauth/callback'
 VERIFIER = 'v' * 43
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).decode().rstrip('=')
 
