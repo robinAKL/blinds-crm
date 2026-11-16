@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 ORIGIN = 'https://vera.example.test'
 RESOURCE = ORIGIN + '/api/mcp'
 CALLBACK = 'https://claude.ai/api/mcp/auth_callback'
+SUPER_AGENT_CALLBACK = 'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback'
 VERIFIER = 'v' * 43
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).decode().rstrip('=')
 
@@ -38,6 +39,14 @@ def main(folder):
         assert client.post(discovery['registration_endpoint'], json={
             **registration, 'redirect_uris': ['https://untrusted.example.test/steal'],
         }).status_code == 400
+        assert client.post(discovery['registration_endpoint'], json={
+            **registration, 'redirect_uris': [SUPER_AGENT_CALLBACK + '/other'],
+        }).status_code == 400
+        super_agent = client.post(discovery['registration_endpoint'], json={
+            **registration, 'redirect_uris': [SUPER_AGENT_CALLBACK],
+            'client_name': 'Super Agent', 'scope': 'crm:read crm:knowledge:read',
+        })
+        assert super_agent.status_code == 201, super_agent.text
         registered = client.post(discovery['registration_endpoint'], json={**registration, 'redirect_uris': [CALLBACK]})
         assert registered.status_code == 201, registered.text
         client_id = registered.json()['client_id']
