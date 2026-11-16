@@ -756,7 +756,7 @@ class OrderNumberEdit(Input):
 
 class OrderReview(Input):
     order_number: str | None = Field(default=None, min_length=1, max_length=200)
-    confirm_order_number: bool = False
+    confirm_order_number: bool = False  # Ignored: order numbers are visible on submission (Robin, 2 Nov)
 
 def column_number(value):
     if not re.fullmatch(r'[A-Z]{1,3}', value):
@@ -1182,11 +1182,8 @@ def register(app, s):
         # Customers see their calculated prices, never the complete private source matrix.
         hidden = {'request_hash','freight_cost','duty_cost','duty_estimate','duty_basis','purchase_cost',
                   'factory_price_usd','usd_nzd_rate','measured_sqm','measured_sqm_source','total_cost',
-                  'gross_profit','cost_per_sqm','shipment_id'}
-        if d.get('order_number_confirmed') is False:
-            hidden.add('order_number')
+                  'gross_profit','cost_per_sqm','shipment_id','order_number_confirmed'}
         return {**{k:v for k,v in d.items() if k not in hidden},
-                'order_number_confirmed':d.get('order_number_confirmed', True),
                 'lines':[{k:v for k,v in line.items() if k!='price_snapshot'} for line in d['lines']]}
 
     def key(prefix, value):
@@ -1953,7 +1950,7 @@ def register(app, s):
                     prepared.append(enrich(c,existing))
                     continue
                 d={**priced,'id':oid,'order_number':assign_business_number(c,customer,payload.project_name),
-                   'order_number_confirmed':bool(item.historical_confirmed_deposit_date),'customer_id':item.customer_id,'company':customer['company'],
+                   'customer_id':item.customer_id,'company':customer['company'],
                    'customer_type':customer.get('customer_type') or 'wholesale','contact_name':customer['contact_name'],
                    'email':customer['email'],'phone':customer['phone'],'company_address':customer['company_address'],
                    'project_name':payload.project_name,'site_address':payload.site_address,
@@ -2929,7 +2926,7 @@ def register(app, s):
                     previous = previous[len(prefix) + 1:]
                 if (previous and previous.casefold() == suffix.casefold()) or (historical.get('project_name') or '').strip().casefold() == suffix.casefold():
                     raise HTTPException(409, 'This Order ID has already been used on one of your orders. Enter a unique Order ID.')
-            d = {**calculate(c, body), 'id': oid, 'order_number': assign_business_number(c, p, body.project_name), 'order_number_confirmed':False, 'customer_id': cid, 'company': p['company'],
+            d = {**calculate(c, body), 'id': oid, 'order_number': assign_business_number(c, p, body.project_name), 'customer_id': cid, 'company': p['company'],
                  'customer_type': p.get('customer_type') or 'wholesale',
                  'contact_name': p['contact_name'], 'email': p['email'], 'phone': p['phone'],
                  'company_address': p['company_address'], 'project_name': body.project_name, 'site_address': body.site_address,
@@ -3089,8 +3086,8 @@ def register(app, s):
         with s.db() as c:
             c.execute('BEGIN IMMEDIATE')
             d = get(c, oid, 'project')
-            if d.get('status') != 'pending_review' or d.get('order_number_confirmed', True):
-                raise HTTPException(409, 'Only an unconfirmed order number on a pending order can be changed')
+            if d.get('status') != 'pending_review':
+                raise HTTPException(409, 'Only the order number of a pending order can be changed')
             previous = d.get('order_number')
             d['order_number'] = validate_order_number_unique(c, body.order_number, oid)
             event(d, 'order_number_edited', actor, previous=previous, order_number=d['order_number'])
@@ -3168,10 +3165,7 @@ def register(app, s):
             d = get(c, oid, 'project')
             if d['status'] != 'pending_review':
                 return enrich(c, d)
-            number_confirmation_required = d.get('order_number_confirmed') is False
-            if number_confirmation_required and not body.confirm_order_number:
-                raise HTTPException(409, 'Review and confirm the order number before accepting this quote')
-            if body.order_number is not None and number_confirmation_required:
+            if body.order_number is not None:
                 proposed = body.order_number.strip()
                 if proposed != d.get('order_number'):
                     d['order_number'] = validate_order_number_unique(c, proposed, oid)
@@ -3183,9 +3177,7 @@ def register(app, s):
                 d.update(calculate(c, b))
             if d['total'] is None:
                 raise HTTPException(409, 'Price rules must be confirmed before review acceptance and invoicing')
-            if number_confirmation_required:
-                d['order_number_confirmed'] = True
-                event(d, 'order_number_confirmed', actor, order_number=d.get('order_number'))
+            d.pop('order_number_confirmed', None)
             d['status'] = 'accepted'
             d['accepted_at'] = s.now()
             d.setdefault('lead_time', lead_time_for(d['lines']))
@@ -3500,7 +3492,7 @@ def register(app, s):
                 visible.append({'id': inv['id'], 'invoice_number': inv['invoice_number'], 'reference': inv.get('reference', ''), 'kind': inv['kind'], 'currency': inv['currency'],
                                 'amount': inv['amount'], 'created_at': inv.get('created_at'), 'payment_status': 'paid' if paid else 'unpaid',
                                 'received_at': inv.get('received_at') if paid else None,
-                                'orders': [{'id': oid, 'order_number': orders[oid].get('order_number') if orders[oid].get('order_number_confirmed', True) else None,
+                                'orders': [{'id': oid, 'order_number': orders[oid].get('order_number'),
                                             'project_name': orders[oid].get('project_name')} for oid in inv['order_ids'] if oid in orders],
                                 'deposit_lines': ([{'order_number': orders[oid].get('order_number'), 'project_name': orders[oid].get('project_name'),
                                                     'order_total': orders[oid].get('total'), 'deposit_due': inv.get('amount')}

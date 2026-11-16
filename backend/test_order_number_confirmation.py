@@ -1,4 +1,4 @@
-"""Regression checks for generated, hidden, editable, and confirmed order numbers."""
+"""Regression checks for generated, visible, editable, and globally unique order numbers."""
 import os
 import re
 import tempfile
@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory() as folder:
     from service import app
     from fastapi.testclient import TestClient
 
-    staff, wholesale, retail = TestClient(app), TestClient(app), TestClient(app)
+    staff, wholesale, retail, other = TestClient(app), TestClient(app), TestClient(app), TestClient(app)
 
     def call(client, method, path, body=None, expected=200):
         response = client.get(f'/api/{path}') if method == 'get' else client.post(f'/api/{path}', json=body)
@@ -20,11 +20,12 @@ with tempfile.TemporaryDirectory() as folder:
     admin = call(staff, 'post', 'auth/login', {'username':'dylan','password':os.getenv('VERA_DEMO_PASSWORD','vera-demo')})
     staff.headers['Authorization'] = 'Bearer '+admin['token']
     customers = []
-    for client, kind, username in [(wholesale,'wholesale','wholesale-test'),(retail,'retail','retail-test')]:
+    for client, kind, username, code in [(wholesale,'wholesale','wholesale-test','TEST'),(retail,'retail','retail-test',None),
+                                         (other,'wholesale','other-test','test')]:
         customer = call(staff,'post','operations/customers',{
             'company':username,'contact_name':'Test User','email':username+'@example.invalid','phone':'12345',
             'company_address':'Test address','username':username,'password':'test-password',
-            'customer_type':kind,'customer_code':'TEST' if kind=='wholesale' else None})
+            'customer_type':kind,'customer_code':code})
         customers.append(customer)
         session = call(client,'post','portal/login',{'username':username,'password':'test-password'})
         client.headers['Authorization'] = 'Bearer '+session['token']
@@ -36,27 +37,25 @@ with tempfile.TemporaryDirectory() as folder:
     order_body = {'project_name':'Test Job','site_address':'Test Site','submission_key':'submission-0001',
                   'lines':[{'window_name':'Window 1','product_id':1,'width_mm':1000,'height_mm':1000,'quantity':1,'options':{}}]}
 
+    # The number is generated and shown to the customer as soon as the order is submitted.
     wholesale_pending = call(wholesale,'post','portal/orders',order_body)
-    assert wholesale_pending['order_number_confirmed'] is False and 'order_number' not in wholesale_pending
-    admin_orders = call(staff,'get','operations/orders')
-    wholesale_order = next(order for order in admin_orders if order['id']==wholesale_pending['id'])
-    assert wholesale_order['order_number']=='TEST-Test Job'
-    assert call(wholesale,'get','portal/orders')[0].get('order_number') is None
+    assert wholesale_pending['order_number']=='TEST-Test Job' and 'order_number_confirmed' not in wholesale_pending
+    assert call(wholesale,'get','portal/orders')[0]['order_number']=='TEST-Test Job'
     assert call(wholesale,'post',f"operations/orders/{wholesale_pending['id']}/order-number",{'order_number':'x'},401)
-    call(staff,'post',f"operations/orders/{wholesale_pending['id']}/review",{'confirm_order_number':False},409)
 
     retail_pending = call(retail,'post','portal/orders',{**order_body,'project_name':'Retail Job','submission_key':'submission-0002'})
-    retail_order = next(order for order in call(staff,'get','operations/orders') if order['id']==retail_pending['id'])
-    assert re.fullmatch(r'R\d{6}\d{2}A',retail_order['order_number']), retail_order['order_number']
-    assert 'order_number' not in retail_pending and call(retail,'get','portal/orders')[0].get('order_number') is None
+    assert re.fullmatch(r'R\d{6}\d{2}A',retail_pending['order_number']), retail_pending['order_number']
+    assert call(retail,'get','portal/orders')[0]['order_number']==retail_pending['order_number']
+
+    # Unique across every customer, ignoring case: another customer whose code differs only in case cannot reuse it.
+    call(other,'post','portal/orders',{**order_body,'submission_key':'submission-0003'},409)
 
     edited_number = 'TEST-Edited Job'
     saved = call(staff,'post',f"operations/orders/{wholesale_pending['id']}/order-number",{'order_number':edited_number})
-    assert saved['order_number']==edited_number and saved['order_number_confirmed'] is False
-    call(staff,'post',f"operations/orders/{retail_pending['id']}/order-number",{'order_number':edited_number},409)
-    confirmed = call(staff,'post',f"operations/orders/{wholesale_pending['id']}/review",{
-        'order_number':edited_number,'confirm_order_number':True})
-    assert confirmed['status']=='accepted' and confirmed['order_number_confirmed'] is True
+    assert saved['order_number']==edited_number
     assert call(wholesale,'get','portal/orders')[0]['order_number']==edited_number
+    call(staff,'post',f"operations/orders/{retail_pending['id']}/order-number",{'order_number':edited_number.upper()},409)
+    accepted = call(staff,'post',f"operations/orders/{wholesale_pending['id']}/review",{})
+    assert accepted['status']=='accepted' and accepted['order_number']==edited_number
     call(staff,'post',f"operations/orders/{wholesale_pending['id']}/order-number",{'order_number':'after-accept'},409)
-    print('PASS order number flow: customer-type generation, portal hiding, admin edit, duplicate guard, mandatory confirmation, and post-confirm visibility')
+    print('PASS order number flow: customer-type generation, visible on submission, admin edit, global case-insensitive uniqueness, no confirmation step')

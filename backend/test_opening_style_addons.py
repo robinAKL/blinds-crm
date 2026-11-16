@@ -52,4 +52,22 @@ with tempfile.TemporaryDirectory() as folder:
     # The submitted order keeps the add-on, so review, exports and invoices see it too.
     saved = post(customer, 'portal/orders', body({'opening_style': 'Tracked Bifold'}, key='track-order-0001', name='Track order'))
     assert saved['lines'][0]['options'].get('tracked_bifold') == 'yes' and 'tracked_sliding' not in saved['lines'][0]['options'], saved['lines'][0]
-    print('PASS opening style sets the track add-on: bifold +$350, sliding +$400, hinged none')
+    # Dylan, 2 Nov: tracked doors run on a track and have no frame. Frame may be blank or the
+    # Track System placeholder the order form sends; a hinged shutter still needs a real frame.
+    from excel_rules import calculate_line
+    rule = {'status': 'configured', 'kind': 'shutter', 'formula': 'excel_shutter', 'rate_per_m2': '100',
+            'minimum_area': '0.5', 'installation_rate': None,
+            'schema': [{'key': 'frame', 'label_en': 'Frame', 'required': True, 'choices': ['BZ20-16']},
+                       {'key': 'opening_style', 'label_en': 'Opening style', 'required': False, 'choices': []}]}
+    def frame_line(options):
+        return calculate_line(rule, {'options': options, 'width_mm': '1000', 'height_mm': '1000', 'quantity': 1, 'panel_count': 2})
+    for style in ('Tracked Bifold', 'Tracked Sliding'):
+        assert frame_line({'opening_style': style})['amount'] and frame_line({'opening_style': style, 'frame': 'Track System'})['amount']
+    for options, error in (({'opening_style': 'Hinged'}, 'Complete Frame'), ({'opening_style': 'Hinged', 'frame': 'Track System'}, 'Unsupported Frame')):
+        try:
+            frame_line(options)
+        except ValueError as e:
+            assert str(e) == error, e
+        else:
+            raise AssertionError(options)
+    print('PASS opening style sets the track add-on: bifold +$350, sliding +$400, hinged none; tracked doors need no frame')
