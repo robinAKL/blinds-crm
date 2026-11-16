@@ -31,10 +31,9 @@ tokens. An access token lasts up to 15 minutes, and a rotating refresh token las
 at most as long as the current CRM authorization session. Disabling the account
 or changing its password invalidates its MCP access.
 
-The default approved callbacks are
-`https://chatgpt.com/connector_platform_oauth_redirect` and
-`https://claude.ai/api/mcp/auth_callback`. If the MCP client displays a different
-callback, set `VERA_MCP_OAUTH_CALLBACKS` to the exact displayed HTTPS URL
+The default approved callbacks include ChatGPT, Claude and the Super Agent staging deployment.
+For another deployment or MCP client, set `VERA_MCP_OAUTH_CALLBACKS` to the exact
+HTTPS callback URL
 (additional entries can be comma-separated), then redeploy. The allowlist is
 applied to dynamic registrations. The backend creates the OAuth storage table on
 first use with its existing database credentials.
