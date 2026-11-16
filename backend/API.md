@@ -90,6 +90,7 @@ all requests to the configured integration account.
 
 | Capability | Tools |
 | --- | --- |
+| CRM operating guide (workflow steps, statuses, UI-only actions) | `get_crm_guide` (optional `step`, `language` zh/en) |
 | Orders | `search_orders`, `get_order`, `get_order_lead_time` |
 | Published pricing knowledge and source references | `get_pricing_knowledge` (CRM administrator) |
 | Customers, invoices, shipments and suppliers | `list_customers`, `list_invoices`, `list_shipments`, `get_shipment`, `list_suppliers`, `get_order_suppliers` |

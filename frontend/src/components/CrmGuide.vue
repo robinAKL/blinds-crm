@@ -83,7 +83,7 @@ const current = ref(0);
 const step = computed(() => steps.value[current.value]);
 const more = computed(() => [
   { label: tx("客户资料", "Customers"), path: "/crm/customers" },
-  { label: tx("定价知识库", "Pricing knowledge"), path: "/crm/pricing" },
+  { label: tx("产品价格与计算", "Product pricing & calculation"), path: "/crm/products" },
   { label: tx("产品目录", "Product catalogue"), path: "/crm/products" },
   { label: tx("分析看板", "Dashboard"), path: "/crm/dashboard" },
 ]);
