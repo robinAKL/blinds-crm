@@ -121,6 +121,16 @@ def sync_opening_style(options):
     return synced
 
 
+# The order form shows this in place of a frame for tracked doors (frontend OrderTable.vue).
+TRACK_FRAME = 'Track System'
+
+
+def frame_optional(options):
+    """Dylan, 2 Nov: Tracked Bifold and Tracked Sliding run on a track and have no frame,
+    so Frame may stay blank or carry the Track System placeholder."""
+    return str((options or {}).get('opening_style') or '').strip().lower() in OPENING_STYLE_ADDONS
+
+
 def addon_totals(options, source_code=None, addon_definitions=None):
     """Return (per_sqm, percent, fixed) for the selected named add-ons."""
     per_sqm = percent = fixed = Decimal(0)

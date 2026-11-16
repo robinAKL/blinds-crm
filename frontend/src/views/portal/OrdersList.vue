@@ -103,7 +103,7 @@ function clearFilters() {
 }
 
 function orderNumber(order: any): string {
-  return order.order_number || (order.order_number_confirmed === false ? tx("待确认", "Pending") : "—");
+  return order.order_number || "—";
 }
 
 function windowCount(order: any): number {
@@ -473,6 +473,7 @@ button.clear {
 
 .cell-number strong {
   overflow-wrap: anywhere;
+  color: #b45309;
 }
 
 .num {

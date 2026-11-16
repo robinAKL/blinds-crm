@@ -111,7 +111,6 @@ interface OrderProvider {
 interface ProjectOrder {
   history?: {action:string;created_at:string;provider_id?:number;template_id?:number;template_revision?:number}[];
   order_number?: string;
-  order_number_confirmed?: boolean;
   id: string;
   customer_id: number;
   company: string;
@@ -295,7 +294,6 @@ const invoicePick = ref<string[]>([]);
 const mailPreview = ref<MailPreview | null>(null);
 const transitRows = ref<{ order_id: string; status: string; reason?: string }[]>([]);
 const batch = reactive<Record<string, number>>({});
-const orderNumberConfirmation = reactive<Record<string, boolean>>({});
 const operationKeys = new Map<string, string>();
 const providerForm = reactive({
   name: "",
@@ -629,11 +627,7 @@ async function act(fn: () => Promise<void>) {
 
 function review(id: string) {
   return act(async () => {
-    const order = orders.value.find((item) => item.id === id);
-    const body = order?.order_number_confirmed === false
-      ? { order_number: order.order_number, confirm_order_number: orderNumberConfirmation[id] === true }
-      : {};
-    await request(`operations/orders/${id}/review`, body);
+    await request(`operations/orders/${id}/review`, {});
     notice.value = tx("已确认接收。定金发票是草稿，发送是另一步。价格未配置时会拒绝。", "Accepted. The deposit invoice is a draft; sending it is a separate step. This is refused when price rules are missing.");
   });
 }
@@ -643,7 +637,7 @@ function saveOrderNumber(id: string) {
     const order = orders.value.find((item) => item.id === id);
     if (!order) throw new Error(tx("未找到此订单。", "Order not found."));
     await request(`operations/orders/${id}/order-number`, {order_number:order.order_number});
-    notice.value = tx("未确认订单号已保存，客户暂时看不到。", "Unconfirmed order number saved; the customer cannot see it yet.");
+    notice.value = tx("订单号已保存，客户同步可见。", "Order number saved; the customer sees the new number.");
   });
 }
 
@@ -708,12 +702,7 @@ async function applyBulkStatus(kind: 'accept' | 'deposit' | 'supplier') {
   if (!targets.length) return;
   await act(async () => {
     for (const order of targets) {
-      if (kind === 'accept' && order.status === 'pending_review') {
-        const body = order.order_number_confirmed === false
-          ? { order_number: order.order_number, confirm_order_number: true }
-          : {};
-        await request(`operations/orders/${order.id}/review`, body);
-      }
+      if (kind === 'accept' && order.status === 'pending_review') await request(`operations/orders/${order.id}/review`, {});
       if (kind === 'deposit' && order.status !== 'pending_review' && order.payment_status === 'deposit_unpaid') await request(`operations/orders/${order.id}/deposit-received`, {});
       if (kind === 'supplier' && order.status === 'accepted' && order.payment_status === 'deposit_received') await request(`operations/orders/${order.id}/supplier-order`, {});
     }
@@ -1388,7 +1377,7 @@ async function loadOrderProviders(orderId: string) {
           <div v-for="order in pageOrders" :key="order.id" class="order-row">
             <button type="button" :title="order.project_name" :aria-pressed="selectedOrder?.id === order.id" class="order-pick" :class="{ current: selectedOrder?.id === order.id }" @click="selectedId = order.id">
               <strong>{{ order.project_name }}</strong>
-              <span>{{ order.order_number_confirmed === false ? tx('订单号待管理员确认','Order number pending admin confirmation') : order.order_number }}</span>
+              <span class="order-no">{{ order.order_number }}</span>
               <span>{{ order.company }}</span>
               <small>{{ orderStatus(order.status) }} · {{ order.total ? `${order.currency || ""} ${order.total}` : tx("待计价", "Unpriced") }}</small>
             </button>
@@ -1415,7 +1404,7 @@ async function loadOrderProviders(orderId: string) {
               <header class="order-header">
                 <div>
                   <h2>{{ selectedOrder.project_name }}</h2>
-                  <p class="order-identity"><strong>{{ selectedOrder.order_number }}</strong><span>{{ selectedOrder.company }}</span><span v-if="customerCode(selectedOrder)">{{ customerCode(selectedOrder) }}</span></p>
+                  <p class="order-identity"><strong class="order-no">{{ selectedOrder.order_number }}</strong><span>{{ selectedOrder.company }}</span><span v-if="customerCode(selectedOrder)">{{ customerCode(selectedOrder) }}</span></p>
                 </div>
                 <div class="status-badges">
                   <span class="badge">{{ orderStatus(selectedOrder.status) }}</span>
@@ -1524,12 +1513,9 @@ async function loadOrderProviders(orderId: string) {
 
 </div><div v-show="detailSection === 'order'">
               <div class="pricing-basis"><h3>{{ tx('本单计价依据','Pricing applied to this order') }}</h3><p v-for="version in [...new Set(selectedOrder.lines.map(l=>l.rule_version).filter(Boolean))]" :key="version"><RouterLink :to="{path:'/crm/pricing',query:{version}}">{{ tx('定价版本','Pricing version') }} {{ version?.slice(0,12) }}</RouterLink></p><span v-if="selectedOrder.status !== 'pending_review'">{{ tx('审核后价格已冻结','Prices frozen after acceptance') }}</span></div>
-              <div v-if="selectedOrder.status === 'pending_review' && selectedOrder.order_number_confirmed === false" class="order-number-confirmation" role="alert">
-                <strong>{{ tx('先确认订单号，再确认接收报价','Confirm the order number before accepting this quote') }}</strong>
-                <p>{{ tx('系统已按客户类型自动生成订单号。确认前客户看不到；管理员可修改并保存。勾选确认后点击“确认接收”，订单接受和订单号确认会一起完成。', 'The system generated this number from the customer type. The customer cannot see it before confirmation. Admins may edit and save it. Check the confirmation box, then accept the quote to confirm both together.') }}</p>
-                <label>{{ tx('待确认订单号','Order number to confirm') }}<input v-model="selectedOrder.order_number" maxlength="200" /></label>
-                <button type="button" class="secondary" :disabled="busy" @click="saveOrderNumber(selectedOrder.id)">{{ tx('保存修改','Save number') }}</button>
-                <label class="number-confirm-check"><input v-model="orderNumberConfirmation[selectedOrder.id]" type="checkbox" />{{ tx('我已核对并确认此订单号；接受报价后该号码将显示给客户。','I have reviewed and confirm this order number; it will be shown to the customer after accepting the quote.') }}</label>
+              <div v-if="selectedOrder.status === 'pending_review'" class="order-number-edit">
+                <label>{{ tx('订单号（客户可见，全局唯一）','Order number (shown to the customer, unique)') }}<input v-model="selectedOrder.order_number" class="order-no" maxlength="200" /></label>
+                <button type="button" class="secondary" :disabled="busy" @click="saveOrderNumber(selectedOrder.id)">{{ tx('保存订单号','Save number') }}</button>
               </div>
               <div v-if="selectedOrder.status === 'pending_review'" class="adjustment-section">
                 <template v-if="selectedIsWholesale">
@@ -1551,7 +1537,7 @@ async function loadOrderProviders(orderId: string) {
                     </table></div>
                     <div class="review-footer"><label>{{ tx("调整说明（仅改价时填写）", "Adjustment note (only when changing price)") }}<input v-model="adjustNote[selectedOrder.id]" /></label><button type="button" class="secondary" :disabled="busy" @click="adjust(selectedOrder)">{{ tx("保存调整", "Save adjustment") }}</button></div>
                   </details>
-                  <div class="review-footer"><button type="button" :disabled="busy || (selectedOrder.order_number_confirmed === false && !orderNumberConfirmation[selectedOrder.id])" @click="review(selectedOrder.id)">{{ tx('确认订单号、接收报价并生成定金草稿','Confirm order number, accept quote and create deposit draft') }}</button></div>
+                  <div class="review-footer"><button type="button" :disabled="busy" @click="review(selectedOrder.id)">{{ tx('接收报价并生成定金草稿','Accept quote and create deposit draft') }}</button></div>
                 </div>
                 </template>
                 <template v-else>
@@ -1566,7 +1552,7 @@ async function loadOrderProviders(orderId: string) {
                       </tr>
                     </tbody>
                   </table></div>
-                  <div class="review-footer"><label>{{ tx("调整说明（仅改价时填写）", "Adjustment note (only when changing price)") }}<input v-model="adjustNote[selectedOrder.id]" /></label><button type="button" class="secondary" :disabled="busy" @click="adjust(selectedOrder)">{{ tx("保存调整", "Save adjustment") }}</button><button type="button" :disabled="busy || (selectedOrder.order_number_confirmed === false && !orderNumberConfirmation[selectedOrder.id])" @click="review(selectedOrder.id)">{{ tx('确认订单号、接收报价并生成定金草稿','Confirm order number, accept quote and create deposit draft') }}</button></div>
+                  <div class="review-footer"><label>{{ tx("调整说明（仅改价时填写）", "Adjustment note (only when changing price)") }}<input v-model="adjustNote[selectedOrder.id]" /></label><button type="button" class="secondary" :disabled="busy" @click="adjust(selectedOrder)">{{ tx("保存调整", "Save adjustment") }}</button><button type="button" :disabled="busy" @click="review(selectedOrder.id)">{{ tx('接收报价并生成定金草稿','Accept quote and create deposit draft') }}</button></div>
                 </template>
               </div>
 
@@ -2266,13 +2252,6 @@ td input { width: 80px; padding: 6px 8px; border: 1px solid #d5ddd6; border-radi
 .desk .table-scroll{margin:6px 0}
 .desk th,.desk td{padding:6px 8px}
 .desk .adjustment-section{margin-top:8px;padding-top:8px}
-.order-number-confirmation{margin:12px 0;padding:14px;border:2px solid #c47b17;border-left-width:7px;border-radius:8px;background:#fff6e5;color:#3f2b10}
-.order-number-confirmation>strong{display:block;font-size:16px}
-.order-number-confirmation p{margin:6px 0 10px;line-height:1.5}
-.order-number-confirmation>label:not(.number-confirm-check){display:grid;gap:5px;max-width:520px;margin:8px 0}
-.order-number-confirmation input:not([type=checkbox]){min-height:40px;padding:8px;border:1px solid #cbb98e;border-radius:6px}
-.order-number-confirmation .number-confirm-check{display:flex;align-items:flex-start;gap:9px;margin-top:10px;font-weight:600}
-.order-number-confirmation .number-confirm-check input{width:20px;height:20px;flex:0 0 20px}
 .desk .adjustment-section .table-scroll{max-height:min(205px,calc(100vh - 540px));overflow-y:auto}
 .desk .adjustment-section thead th{position:sticky;top:0;z-index:1}
 .review-footer{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-top:8px}
@@ -2321,6 +2300,11 @@ td input { width: 80px; padding: 6px 8px; border: 1px solid #d5ddd6; border-radi
 @media(max-width:1250px){.detail-navigation{display:block;min-height:0}.desk .detail-navigation .next-action{margin:2px 0 6px}}
 .order-identity{display:flex;align-items:center;gap:8px;margin:4px 0 0;flex-wrap:wrap;font-size:12px;line-height:1.3}
 .order-identity span{color:#53655d}
+/* Robin, 2 Nov: order numbers stand out in one colour wherever they are listed. */
+.desk .order-pick span.order-no,.order-no{color:#b45309;font-weight:700}
+.order-number-edit{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin:12px 0}
+.order-number-edit label{display:grid;gap:5px;flex:1 1 260px;max-width:420px}
+.order-number-edit input{min-height:38px;padding:8px;border:1px solid #cfd8d2;border-radius:6px}
 .product-pagination{margin:0 0 8px;padding:6px 0;gap:8px}
 .product-pagination span{white-space:nowrap}
 .fulfil-hint{margin:4px 0 8px;color:#53655d;font-size:12px}

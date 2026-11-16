@@ -212,16 +212,17 @@ def up(v, places=2):
 def calculate_line(rule, line, adjustment=None, product_code=None, addon_definitions=None, installation_per_panel=None):
     if rule['status'] not in ('configured', 'provisional_placeholder'):
         raise ValueError(rule.get('reason', 'Product price rule is missing'))
-    from addons import ADDON_KEYS
+    from addons import ADDON_KEYS, TRACK_FRAME, frame_optional
     supplied = line['options']
     allowed = {f['key']: f for f in rule['schema']}
     if set(supplied) - allowed.keys() - (ADDON_KEYS if rule.get('kind') == 'shutter' else set()):
         raise ValueError('Unsupported product fields')
     for key, field in allowed.items():
         value = supplied.get(key, '')
-        if field['required'] and not value:
+        track_frame = key == 'frame' and frame_optional(supplied)
+        if field['required'] and not value and not track_frame:
             raise ValueError('Complete '+field['label_en'])
-        if value and field['choices'] and value not in field['choices']:
+        if value and field['choices'] and value not in field['choices'] and not (track_frame and value == TRACK_FRAME):
             raise ValueError('Unsupported '+field['label_en'])
         if len(value)>1000:
             raise ValueError('Configuration text is too long')
