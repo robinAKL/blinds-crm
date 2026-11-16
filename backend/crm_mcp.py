@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
@@ -20,6 +20,7 @@ from starlette.routing import Route
 
 from operations import Batch, Fulfilment, OrderProviderAssignment, OrderReview, ShipmentEta, Supplier
 
+from crm_guide import STEPS, crm_guide
 from crm_mcp_oauth import KNOWLEDGE, MCP_PATH, METADATA_PATH, READ, SCOPES, WRITE, Principal, configured_oauth
 
 LOGGER = logging.getLogger(__name__)
@@ -93,7 +94,13 @@ def register_crm_mcp(app, crm, **operations):
         return
     server = FastMCP(
         'VERA CRM',
-        instructions='Use search_orders to find an order and get_order to inspect its current state and line IDs.',
+        instructions=(
+            'VERA CRM for interior shutter orders. Call get_crm_guide first to learn the staff workflow '
+            '(customer order, review & deposit, supplier order, transit/arrival/delivery, balance invoice, rebate), '
+            'the order and payment statuses, and which steps can only be done in the CRM UI. '
+            'Use search_orders to find an order and get_order to inspect its current state and line IDs. '
+            'Use get_pricing_knowledge (administrators) for the published pricing rules.'
+        ),
         stateless_http=True,
         json_response=True,
         streamable_http_path=MCP_PATH,
@@ -160,6 +167,12 @@ def register_crm_mcp(app, crm, **operations):
     async def get_order_lead_time(order_id: str) -> dict[str, Any]:
         """Read the lead-time rules for an accepted order. Use get_order for its estimated arrival."""
         return await invoke('lead_time', order_id, actor=actor())
+
+    @read
+    async def get_crm_guide(step: Literal[tuple(row['id'] for row in STEPS)] | None = None,
+                            language: Literal['zh', 'en'] = 'zh') -> dict[str, Any]:
+        """Read the CRM operating guide: workflow steps, what to check, which MCP tools apply and what is UI-only. Omit step for the whole guide with status glossary."""
+        return crm_guide(step or '', language)
 
     @scoped_tool(KNOWLEDGE, read_only=True)
     async def get_pricing_knowledge() -> dict[str, Any]:

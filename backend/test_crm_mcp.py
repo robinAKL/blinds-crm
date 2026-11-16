@@ -62,6 +62,15 @@ def main(folder):
         tools = {tool['name']: tool for tool in result(rpc('tools/list'))['tools']}
         assert tools['search_orders']['annotations']['readOnlyHint']
         assert not tools['approve_order']['annotations']['readOnlyHint']
+        assert tools['get_crm_guide']['annotations']['readOnlyHint']
+        guide = payload('get_crm_guide')
+        assert [step['id'] for step in guide['steps']] == guide['step_ids']
+        assert {status['value'] for status in guide['order_statuses']} >= {'pending_review', 'complete'}
+        step = payload('get_crm_guide', step='review_deposit', language='en')['steps']
+        assert len(step) == 1 and step[0]['order'] == 2 and 'approve_order' in step[0]['mcp_tools']
+        assert call('get_crm_guide', step='unknown')['isError']
+        listed = set(tools)
+        assert all(set(row['mcp_tools']) <= listed for row in guide['steps'] + guide['references'])
 
         staff = post('auth/login', {'username': 'dylan', 'password': os.getenv('VERA_DEMO_PASSWORD', 'vera-demo')})
         staff_headers = {'Authorization': 'Bearer ' + staff['token']}
