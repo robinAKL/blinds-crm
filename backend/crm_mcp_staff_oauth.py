@@ -7,7 +7,6 @@ import re
 import secrets
 import time
 from contextlib import contextmanager
-from html import escape
 from threading import Lock
 from urllib.parse import urlsplit
 
@@ -24,32 +23,33 @@ from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOption
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Route, request_response
 
 from crm_mcp_oauth import MCP_PATH, METADATA_PATH, READ, SCOPES, Principal, ResourceMetadata, https_url
+from crm_mcp_consent import PAGE_HEADERS, consent_error, consent_form
 
 AUTH_PATH = '/api/mcp-auth'
 DISCOVERY_PATH = '/.well-known/oauth-authorization-server' + AUTH_PATH
 CONSENT = AUTH_PATH + '/consent'
-COOKIE = '__Host-vera-mcp-consent'
+COOKIE_PREFIX = '__Host-vera-mcp-consent-'
 ACCESS_SECONDS = 900
-DEFAULT_CALLBACKS = {
-    'https://chatgpt.com/connector_platform_oauth_redirect',
-    'https://claude.ai/api/mcp/auth_callback',
-    'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback',
+KNOWN_CLIENTS = {
+    'https://chatgpt.com/connector_platform_oauth_redirect': 'ChatGPT',
+    'https://claude.ai/api/mcp/auth_callback': 'Claude',
+    'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback': 'Super Agent',
 }
 TOKEN_CHARS = re.compile(r'[A-Za-z0-9_-]{43}')
 VERIFIER = re.compile(r'[A-Za-z0-9._~-]{43,128}')
-PAGE_HEADERS = {
-    'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-    'X-Content-Type-Options': 'nosniff',
-}
+EXPIRED_MESSAGE = 'This authorization request has expired. Return to the app and connect again.'
 
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def consent_cookie(ticket):
+    return COOKIE_PREFIX + digest(ticket)[:24]
 
 
 class StaffOAuth(ResourceMetadata):
@@ -62,7 +62,7 @@ class StaffOAuth(ResourceMetadata):
         self.crm = crm
         self.ready = False
         self.schema_lock = Lock()
-        self.callbacks = DEFAULT_CALLBACKS | {
+        self.callbacks = set(KNOWN_CLIENTS) | {
             value.strip() for value in os.getenv('VERA_MCP_OAUTH_CALLBACKS', '').split(',') if value.strip()
         }
         for callback in self.callbacks:
@@ -135,69 +135,74 @@ class StaffOAuth(ResourceMetadata):
         await run_in_threadpool(store)
         return construct_redirect_uri(self.issuer + '/consent', ticket=ticket)
 
-    def consent_page(self, ticket, csrf, scopes, redirect_uri):
-        descriptions = {
-            'crm:read': 'Read CRM orders, invoices, customers and shipments',
-            'crm:orders:write': 'Update orders, shipments and supplier assignments',
-            'crm:knowledge:read': 'Read internal pricing knowledge (administrators only)',
-        }
-        permissions = ''.join(f'<li>{escape(descriptions[scope])}</li>' for scope in scopes)
-        destination = escape(urlsplit(redirect_uri).hostname or '')
-        page = HTMLResponse(f"""<!doctype html><html lang="en"><meta charset="utf-8">
-<title>VERA CRM authorization</title><main><h1>Connect VERA CRM</h1>
-<p>Sign in with your VERA CRM staff account to grant these permissions to {destination}.</p><ul>{permissions}</ul>
-<form method="post" action="{CONSENT}">
-<input type="hidden" name="ticket" value="{escape(ticket)}">
-<input type="hidden" name="csrf" value="{escape(csrf)}">
-<p><label>CRM username <input name="username" autocomplete="username" maxlength="200" required></label></p>
-<p><label>CRM password <input name="password" type="password" autocomplete="current-password" maxlength="200" required></label></p>
-<button name="decision" value="allow">Sign in and authorize</button>
-<button name="decision" value="deny" formnovalidate>Cancel</button></form></main></html>""",
-                            headers=PAGE_HEADERS)
-        page.set_cookie(COOKIE, digest(ticket + csrf), max_age=300, secure=True, httponly=True, samesite='lax')
+    def consent_page(self, ticket, pending, username='', error='', status=200):
+        params = pending['params']
+        callback = params['redirect_uri']
+        if callback not in self.callbacks:
+            return consent_error(EXPIRED_MESSAGE, 400)
+        csrf = secrets.token_urlsafe(32)
+        app_name = KNOWN_CLIENTS.get(callback, urlsplit(callback).hostname or '')
+        page = consent_form(CONSENT, ticket, csrf, params['scopes'] or [READ], callback, app_name,
+                            username=username, error=error, status=status)
+        remaining = max(1, int(pending['expires_at'] - time.time()))
+        page.set_cookie(consent_cookie(ticket), digest(ticket + csrf), max_age=remaining,
+                        secure=True, httponly=True, samesite='lax')
         return page
 
-    def consent(self, ticket: str):
+    def consent(self, ticket: str = ''):
         if not TOKEN_CHARS.fullmatch(ticket):
-            raise HTTPException(400, 'Invalid authorization request')
+            return consent_error('Open a new authorization request from the app you want to connect.', 400)
         with self.db() as c:
             pending = self.get(c, 'consent', digest(ticket))
         if not pending:
-            raise HTTPException(400, 'Authorization request expired')
-        params = pending['params']
-        return self.consent_page(ticket, secrets.token_urlsafe(32), params['scopes'] or [READ], params['redirect_uri'])
+            return consent_error(EXPIRED_MESSAGE, 400)
+        return self.consent_page(ticket, pending)
 
-    def approve(self, request: Request, ticket: str = Form(max_length=43), csrf: str = Form(max_length=43),
-                decision: str = Form(max_length=8), username: str = Form('', max_length=200),
+    def approve(self, request: Request, ticket: str = Form('', max_length=43), csrf: str = Form('', max_length=43),
+                decision: str = Form('', max_length=8), username: str = Form('', max_length=200),
                 password: str = Form('', max_length=200)):
-        if (not TOKEN_CHARS.fullmatch(ticket) or not TOKEN_CHARS.fullmatch(csrf)
-                or not hmac.compare_digest(request.cookies.get(COOKIE, '').encode(), digest(ticket + csrf).encode())):
-            raise HTTPException(403, 'Invalid authorization form')
+        if not TOKEN_CHARS.fullmatch(ticket):
+            return consent_error(EXPIRED_MESSAGE, 400)
         key = digest(ticket)
+        cookie_name = consent_cookie(ticket)
+        attempt_key = digest(username.casefold())
         with self.db(write=True) as c:
             pending = self.get(c, 'consent', key)
-            if pending:
-                c.execute("DELETE FROM mcp_oauth_records WHERE kind='consent' AND id=?", (key,))
-        if not pending:
-            raise HTTPException(400, 'Authorization request expired')
+            if not pending or pending['params']['redirect_uri'] not in self.callbacks:
+                return consent_error(EXPIRED_MESSAGE, 400)
+            if (not TOKEN_CHARS.fullmatch(csrf)
+                    or not hmac.compare_digest(request.cookies.get(cookie_name, '').encode(), digest(ticket + csrf).encode())):
+                return consent_error('Reload this authorization page and try again.', 403, resume=f'{CONSENT}?ticket={ticket}')
+            if decision == 'allow':
+                attempt = self.get(c, 'sign_in_limit', attempt_key)
+                count = attempt['count'] if attempt else 0
+                if count >= 10:
+                    return self.consent_page(ticket, pending, username,
+                                             'Too many sign-in attempts. Try again in a few minutes.', 429)
+                c.execute("DELETE FROM mcp_oauth_records WHERE kind='sign_in_limit' AND id=?", (attempt_key,))
+                expiry = attempt['expires_at'] if attempt else time.time() + 300
+                self.save(c, 'sign_in_limit', attempt_key, {'count': count + 1}, expiry)
+            elif decision != 'deny':
+                return self.consent_page(ticket, pending, username, 'Choose Sign in and authorize or Cancel.', 400)
+            c.execute("DELETE FROM mcp_oauth_records WHERE kind='consent' AND id=?", (key,))
         params = AuthorizationParams.model_validate(pending['params'])
         result = {'state': params.state, 'iss': self.issuer}
         if decision == 'deny':
             result['error'] = 'access_denied'
-        elif decision == 'allow':
-            attempt_key = digest(username.casefold())
-            with self.db(write=True) as c:
-                attempt = self.get(c, 'sign_in_limit', attempt_key)
-                count = attempt['count'] if attempt else 0
-                if count >= 10:
-                    raise HTTPException(429, 'Too many sign-in attempts. Try again in a few minutes.')
-                c.execute("DELETE FROM mcp_oauth_records WHERE kind='sign_in_limit' AND id=?", (attempt_key,))
-                expiry = attempt['expires_at'] if attempt else time.time() + 300
-                self.save(c, 'sign_in_limit', attempt_key, {'count': count + 1}, expiry)
+        else:
             try:
                 signed_in = self.crm.login(self.crm.Login(username=username, password=password))
-            except HTTPException:
-                raise HTTPException(401, 'CRM sign-in failed. Restart authorization and check your credentials.') from None
+            except HTTPException as error:
+                if error.status_code not in (400, 401, 403, 429):
+                    raise
+                if pending['expires_at'] <= time.time():
+                    return consent_error(EXPIRED_MESSAGE, 400)
+                with self.db(write=True) as c:
+                    self.save(c, 'consent', key, {'client_id': pending['client_id'], 'params': pending['params']},
+                              pending['expires_at'])
+                message = ('Too many sign-in attempts. Try again in a few minutes.' if error.status_code == 429
+                           else 'Check your CRM username and password, then try again.')
+                return self.consent_page(ticket, pending, username, message, error.status_code)
             session_hash = digest(signed_in['token'])
             code = secrets.token_urlsafe(32)
             with self.db(write=True) as c:
@@ -209,11 +214,9 @@ class StaffOAuth(ResourceMetadata):
                     'resource': self.resource, 'subject': signed_in['user']['username'],
                 }, time.time() + 120, session_hash)
             result['code'] = code
-        else:
-            raise HTTPException(400, 'Invalid authorization decision')
         redirect = RedirectResponse(construct_redirect_uri(str(params.redirect_uri), **result), status_code=303,
                                     headers=PAGE_HEADERS)
-        redirect.delete_cookie(COOKIE, secure=True, httponly=True, samesite='lax')
+        redirect.delete_cookie(cookie_name, secure=True, httponly=True, samesite='lax')
         return redirect
 
     async def load_authorization_code(self, client, code):
