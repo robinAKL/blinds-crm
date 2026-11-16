@@ -55,20 +55,37 @@ def main(folder):
                          'code_challenge': CHALLENGE, 'code_challenge_method': 'S256', 'resource': RESOURCE,
                          'scope': 'crm:read crm:orders:write', 'state': 'client-state'}
 
+        def form_from(page):
+            return {name: re.search(f'name="{name}" value="([^"]+)"', page.text)[1] for name in ('ticket', 'csrf')}
+
         def consent_form():
             requested = client.get(discovery['authorization_endpoint'], params=authorization)
             assert requested.is_redirect, requested.text
             page = client.get(requested.headers['location'])
             assert page.status_code == 200 and 'Sign in and authorize' in page.text
-            return {name: re.search(f'name="{name}" value="([^"]+)"', page.text)[1] for name in ('ticket', 'csrf')}
+            assert f"form-action 'self' {CALLBACK};" in page.headers['Content-Security-Policy']
+            assert "style-src 'sha256-" in page.headers['Content-Security-Policy']
+            return form_from(page)
 
         form = consent_form()
-        assert client.post(CONSENT, data={**form, 'csrf': 'x' * 43, 'decision': 'deny'}).status_code == 403
+        other_tab = consent_form()
+        rejected = client.post(CONSENT, data={**form, 'csrf': other_tab['csrf'], 'decision': 'deny'})
+        assert rejected.status_code == 403 and 'Reload authorization' in rejected.text
         denied = client.post(CONSENT, data={**form, 'decision': 'deny'})
+        assert denied.status_code == 303
         assert parse_qs(urlsplit(denied.headers['location']).query)['error'] == ['access_denied']
+        assert client.post(CONSENT, data={**other_tab, 'decision': 'deny'}).status_code == 303
+        expired = client.post(CONSENT, data={**form, 'decision': 'deny'})
+        assert expired.status_code == 400 and 'connect again' in expired.text
 
         form = consent_form()
-        signed_in = client.post(CONSENT, data={**form, 'decision': 'allow', 'username': 'dylan',
+        failed = client.post(CONSENT, data={**form, 'decision': 'allow', 'username': 'dylan',
+                                            'password': 'not-the-fixture-password'})
+        assert failed.status_code == 401 and 'Check your CRM username and password' in failed.text
+        assert 'not-the-fixture-password' not in failed.text
+        retry = form_from(failed)
+        assert retry['ticket'] == form['ticket'] and retry['csrf'] != form['csrf']
+        signed_in = client.post(CONSENT, data={**retry, 'decision': 'allow', 'username': 'dylan',
                                                'password': os.getenv('VERA_DEMO_PASSWORD', 'vera-demo')})
         assert signed_in.status_code == 303, signed_in.text
         returned = parse_qs(urlsplit(signed_in.headers['location']).query)
