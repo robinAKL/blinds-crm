@@ -14,7 +14,36 @@ Use Streamable HTTP at `https://<CRM-host>/api/mcp`. Deploy with OAuth 2.1 for
 per-user sign-in. A fixed integration credential is also supported when the four
 OAuth settings below are unset. Configure the backend environment and redeploy.
 
-### OAuth 2.1 for interactive clients
+### OAuth 2.1 with existing VERA staff accounts
+
+Set the following backend environment variables and deploy:
+
+```env
+VERA_MCP_OAUTH_MODE=staff
+VERA_MCP_OAUTH_RESOURCE=https://blinds-crm.vercel.app/api/mcp
+```
+
+Add the resource URL to the MCP client and select OAuth with dynamic client
+registration. The client redirects to VERA's consent page where the employee
+signs in using the regular CRM username and password. Each tool call is attributed
+to that account. The staff mode uses CRM-backed, resource-bound opaque access
+tokens. An access token lasts up to 15 minutes, and a rotating refresh token lasts
+at most as long as the current CRM authorization session. Disabling the account
+or changing its password invalidates its MCP access.
+
+The default approved callbacks are
+`https://chatgpt.com/connector_platform_oauth_redirect` and
+`https://claude.ai/api/mcp/auth_callback`. If the MCP client displays a different
+callback, set `VERA_MCP_OAUTH_CALLBACKS` to the exact displayed HTTPS URL
+(additional entries can be comma-separated), then redeploy. The allowlist is
+applied to dynamic registrations. The backend creates the OAuth storage table on
+first use with its existing database credentials.
+
+The external issuer, JWKS and subject map settings below apply to external
+OAuth mode. Staff mode derives the issuer from the resource and binds each token
+directly to the authorized CRM account.
+
+### OAuth 2.1 with an external identity provider
 
 | Variable | Purpose |
 | --- | --- |
@@ -73,4 +102,4 @@ invoice creation and configured notifications. Reuse the same operation key and
 arguments when retrying transit or fulfilment. Transit reports individual order
 outcomes in `results`. MCP clients should inspect both `isError` and those outcomes.
 
-Run `python test_crm_mcp.py` and `python test_crm_mcp_oauth.py` from the backend directory for local integration checks.
+Run `python test_crm_mcp.py`, `python test_crm_mcp_oauth.py` and `python test_crm_mcp_staff_oauth.py` from the backend directory for local integration checks.

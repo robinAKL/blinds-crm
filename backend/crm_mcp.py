@@ -82,7 +82,12 @@ class AuthenticatedTransport:
 
 def register_crm_mcp(app, crm, **operations):
     try:
-        oauth = configured_oauth()
+        if os.getenv('VERA_MCP_OAUTH_MODE') == 'staff':
+            from crm_mcp_staff_oauth import StaffOAuth
+            oauth = StaffOAuth(crm, os.getenv('VERA_MCP_OAUTH_RESOURCE', ''))
+            oauth.register_routes(app)
+        else:
+            oauth = configured_oauth()
     except ValueError:
         LOGGER.error('MCP is disabled because its OAuth configuration is incomplete or invalid')
         return

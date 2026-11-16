@@ -58,6 +58,12 @@
       }
     },
     {
+      "source": "/.well-known/oauth-authorization-server/api/mcp-auth",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
       "source": "/.well-known/oauth-protected-resource/api/mcp",
       "destination": {
         "service": "backend"
