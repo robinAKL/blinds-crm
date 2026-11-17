@@ -34,6 +34,9 @@ DISCOVERY_PATH = '/.well-known/oauth-authorization-server' + AUTH_PATH
 CONSENT = AUTH_PATH + '/consent'
 COOKIE_PREFIX = '__Host-vera-mcp-consent-'
 ACCESS_SECONDS = 900
+# The CRM session created at consent belongs to the MCP grant alone (its bearer token is never returned), so it
+# outlives the 8-hour browser session. Password changes, deactivation, revocation and refresh replay still end it.
+GRANT_SECONDS = 86400 * min(max(int(os.getenv('VERA_MCP_GRANT_DAYS') or 30), 1), 90)
 KNOWN_CLIENTS = {
     'https://chatgpt.com/connector_platform_oauth_redirect': 'ChatGPT',
     'https://claude.ai/api/mcp/auth_callback': 'Claude',
@@ -208,6 +211,7 @@ class StaffOAuth(ResourceMetadata):
             code = secrets.token_urlsafe(32)
             with self.db(write=True) as c:
                 c.execute("DELETE FROM mcp_oauth_records WHERE kind='sign_in_limit' AND id=?", (attempt_key,))
+                c.execute('UPDATE sessions SET expires_at=? WHERE token_hash=?', (time.time() + GRANT_SECONDS, session_hash))
                 self.save(c, 'code', digest(code), {
                     'client_id': pending['client_id'], 'scopes': params.scopes or [READ],
                     'code_challenge': params.code_challenge, 'redirect_uri': str(params.redirect_uri),
