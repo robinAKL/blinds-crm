@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
+from unittest.mock import patch
 from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
@@ -121,15 +123,21 @@ def main(folder):
         with db() as c:
             saved = c.execute('SELECT data FROM operations_records WHERE id=?', ('oauth-order',)).fetchone()
         assert json.loads(saved['data'])['history'][-1]['actor'] == 'dylan'
+        with db() as c:
+            session = c.execute('SELECT s.expires_at FROM sessions s JOIN mcp_oauth_records r ON r.session_hash=s.token_hash '
+                                "WHERE r.kind='refresh' AND r.id=?", (digest(tokens['refresh_token']),)).fetchone()
+        assert session['expires_at'] > time.time() + 29 * 86400, 'MCP grant must outlive the 8-hour browser session'
         refresh = {'grant_type': 'refresh_token', 'client_id': client_id,
                    'refresh_token': tokens['refresh_token'], 'resource': RESOURCE}
-        renewed = client.post(discovery['token_endpoint'], data=refresh)
-        assert renewed.status_code == 200, renewed.text
-        assert rpc(tokens['access_token'], 'tools/list').status_code == 401
-        assert rpc(renewed.json()['access_token'], 'tools/list').status_code == 200
-        assert client.post(discovery['token_endpoint'], data=refresh).status_code == 400
-        assert rpc(renewed.json()['access_token'], 'tools/list').status_code == 401
-        print('PASS CRM staff OAuth discovery, sign-in, consent, PKCE and token rotation')
+        later = time.time() + 9 * 3600
+        with patch('time.time', lambda: later):
+            assert rpc(tokens['access_token'], 'tools/list').status_code == 401
+            renewed = client.post(discovery['token_endpoint'], data=refresh)
+            assert renewed.status_code == 200, renewed.text
+            assert rpc(renewed.json()['access_token'], 'tools/list').status_code == 200
+            assert client.post(discovery['token_endpoint'], data=refresh).status_code == 400
+            assert rpc(renewed.json()['access_token'], 'tools/list').status_code == 401
+        print('PASS CRM staff OAuth discovery, sign-in, consent, PKCE, 30-day grant and token rotation')
 
 
 if __name__ == '__main__':
