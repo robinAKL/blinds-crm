@@ -43,9 +43,26 @@ KNOWN_CLIENTS = {
     'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/vera/callback': 'Super Agent',
     'https://sa-staging-web.victoriousplant-926ad8d5.australiaeast.azurecontainerapps.io/mcp/oauth/callback': 'Super Agent',
 }
+# Desktop apps (Claude Code, Codex and the like) sign in through a listener on the person's own computer on a port
+# picked at run time (RFC 8252 section 7.3). Only that exact shape is accepted: plain http on a loopback address, an
+# explicit unprivileged port, and the /callback path. PKCE is required and the person still sees and approves consent.
+LOOPBACK_HOSTS = {'localhost', '127.0.0.1', '::1'}
+LOOPBACK_PATH = '/callback'
 TOKEN_CHARS = re.compile(r'[A-Za-z0-9_-]{43}')
 VERIFIER = re.compile(r'[A-Za-z0-9._~-]{43,128}')
 EXPIRED_MESSAGE = 'This authorization request has expired. Return to the app and connect again.'
+
+
+def loopback_callback(value):
+    """True for a desktop app's sign-in listener on this computer, e.g. http://localhost:53682/callback."""
+    try:
+        url = urlsplit(str(value))
+        port = url.port
+    except ValueError:
+        return False
+    return (url.scheme == 'http' and url.hostname in LOOPBACK_HOSTS and port is not None and 1024 <= port <= 65535
+            and url.path == LOOPBACK_PATH and not url.query and not url.fragment
+            and url.username is None and url.password is None)
 
 
 def digest(value):
@@ -115,8 +132,11 @@ class StaffOAuth(ResourceMetadata):
                 return OAuthClientInformationFull.model_validate(row) if row else None
         return await run_in_threadpool(read)
 
+    def allowed_callback(self, uri):
+        return str(uri) in self.callbacks or loopback_callback(uri)
+
     async def register_client(self, client):
-        if not client.redirect_uris or any(str(uri) not in self.callbacks for uri in client.redirect_uris):
+        if not client.redirect_uris or any(not self.allowed_callback(uri) for uri in client.redirect_uris):
             raise RegistrationError('invalid_redirect_uri', 'This callback URL is not enabled for VERA CRM')
         def store():
             with self.db(write=True) as c:
@@ -142,10 +162,15 @@ class StaffOAuth(ResourceMetadata):
     def consent_page(self, ticket, pending, username='', error='', status=200):
         params = pending['params']
         callback = params['redirect_uri']
-        if callback not in self.callbacks:
+        if not self.allowed_callback(callback):
             return consent_error(EXPIRED_MESSAGE, 400)
         csrf = secrets.token_urlsafe(32)
         app_name = KNOWN_CLIENTS.get(callback, urlsplit(callback).hostname or '')
+        if loopback_callback(callback):
+            with self.db() as c:
+                client = self.get(c, 'client', pending['client_id']) or {}
+            name = str(client.get('client_name') or '').strip()[:80]
+            app_name = f'{name} on this computer' if name else 'a desktop app on this computer'
         page = consent_form(CONSENT, ticket, csrf, params['scopes'] or [READ], callback, app_name,
                             username=username, error=error, status=status)
         remaining = max(1, int(pending['expires_at'] - time.time()))
@@ -172,7 +197,7 @@ class StaffOAuth(ResourceMetadata):
         attempt_key = digest(username.casefold())
         with self.db(write=True) as c:
             pending = self.get(c, 'consent', key)
-            if not pending or pending['params']['redirect_uri'] not in self.callbacks:
+            if not pending or not self.allowed_callback(pending['params']['redirect_uri']):
                 return consent_error(EXPIRED_MESSAGE, 400)
             if (not TOKEN_CHARS.fullmatch(csrf)
                     or not hmac.compare_digest(request.cookies.get(cookie_name, '').encode(), digest(ticket + csrf).encode())):

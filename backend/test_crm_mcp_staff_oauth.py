@@ -57,6 +57,27 @@ def main(folder):
                          'code_challenge': CHALLENGE, 'code_challenge_method': 'S256', 'resource': RESOURCE,
                          'scope': 'crm:read crm:orders:write', 'state': 'client-state'}
 
+        # A desktop app (Claude Code) signs in through a listener on the person's own computer, any free port.
+        for bad in ('http://localhost:53682/steal', 'http://vera.example.test:53682/callback', 'http://localhost/callback',
+                    'http://localhost:80/callback', 'https://localhost:53682/callback', 'http://me@localhost:53682/callback',
+                    'http://localhost:53682/callback?next=x'):
+            assert client.post(discovery['registration_endpoint'], json={
+                **registration, 'redirect_uris': [bad],
+            }).status_code == 400, bad
+        loopback = 'http://localhost:53682/callback'
+        desktop = client.post(discovery['registration_endpoint'], json={
+            **registration, 'redirect_uris': [loopback], 'client_name': 'Claude Code',
+        })
+        assert desktop.status_code == 201, desktop.text
+        desktop_request = client.get(discovery['authorization_endpoint'], params={
+            **authorization, 'client_id': desktop.json()['client_id'], 'redirect_uri': loopback,
+        })
+        assert desktop_request.is_redirect, desktop_request.text
+        desktop_page = client.get(desktop_request.headers['location'])
+        assert desktop_page.status_code == 200, desktop_page.text
+        assert 'Claude Code on this computer' in desktop_page.text
+        assert f"form-action 'self' {loopback};" in desktop_page.headers['Content-Security-Policy']
+
         def form_from(page):
             return {name: re.search(f'name="{name}" value="([^"]+)"', page.text)[1] for name in ('ticket', 'csrf')}
 
