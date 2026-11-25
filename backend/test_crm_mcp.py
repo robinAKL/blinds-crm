@@ -125,7 +125,33 @@ def main(folder):
             assert replay['id'] == recorded['id'] and replay['order'] == recorded['order']
             assert len([entry for entry in replay['order']['history'] if entry['action'] == kind]) == 1
         assert client.get('/api/operations/orders', headers=staff_headers).json()[0]['status'] == 'complete'
-        print('PASS CRM MCP transport, authentication, published knowledge and order workflow')
+
+        # search_orders pages with limit/offset. Undeclared arguments such as page/page_size used to be
+        # dropped silently, so callers got the default 20 orders and took it for a truncated response.
+        assert tools['search_orders']['inputSchema']['additionalProperties'] is False
+        refused = call('search_orders', page=1, page_size=100)
+        assert refused['isError'] and 'page' in refused['content'][0]['text'], refused
+        assert call('list_customers', page_size=100)['isError']
+        for n in range(2, 4):
+            post('portal/orders', dict(project_name=f'MCP test order {n}', site_address='', submission_key=f'mcp-test-{n}',
+                 lines=[dict(window_name='Window', product_id=product['id'], width_mm='1000', height_mm='1000',
+                             quantity=1, panel_count=2, options={'colour': 'White TEST', 'fitting': 'In Fit'})]),
+                 portal_headers)
+        pages, offset = [], 0
+        while offset is not None:
+            found = payload('search_orders', query='mcp test order', limit=2, offset=offset)
+            assert found['total'] == 3 and found['limit'] == 2 and found['offset'] == offset
+            assert found['has_more'] == (found['next_offset'] is not None)
+            pages.append(found)
+            offset = found['next_offset']
+        assert [len(found['items']) for found in pages] == [2, 1] and pages[0]['next_offset'] == 2
+        assert len({item['id'] for found in pages for item in found['items']}) == 3
+        everything = payload('search_orders', query='mcp test order', limit=100)
+        assert len(everything['items']) == 3 and not everything['has_more'] and everything['next_offset'] is None
+        assert call('search_orders', limit=500)['isError']
+        listed = payload('list_customers', limit=1)
+        assert listed['total'] == len(listed['items']) == 1 and not listed['has_more']
+        print('PASS CRM MCP transport, authentication, published knowledge, order workflow and paging')
 
 
 if __name__ == '__main__':

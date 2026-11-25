@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -30,8 +30,25 @@ CURRENT_PRINCIPAL = ContextVar('crm_mcp_principal')
 def actor():
     return CURRENT_PRINCIPAL.get().username
 
-Limit = Annotated[int, Field(ge=1, le=100)]
-Offset = Annotated[int, Field(ge=0)]
+Limit = Annotated[int, Field(ge=1, le=100, description='Items per page, 1-100 (default 20).')]
+Offset = Annotated[int, Field(ge=0, description='Items to skip. Use next_offset from the previous page.')]
+
+
+def reject_unknown_arguments(tool):
+    """FastMCP drops arguments a tool does not declare, so search_orders(page=1, page_size=100) silently
+    returned the default 20 orders. Refuse undeclared arguments so the caller sees its mistake."""
+    base = tool.fn_metadata.arg_model
+    strict = type(base.__name__, (base,), {'__module__': base.__module__,
+                                           'model_config': ConfigDict(**base.model_config, extra='forbid')})
+    tool.fn_metadata.arg_model = strict
+    tool.parameters = strict.model_json_schema(by_alias=True)
+
+
+def paged(items, total, limit, offset):
+    """One page plus what the caller needs to fetch the next one; a short page is never mistaken for all results."""
+    end = offset + len(items)
+    return {'items': items, 'total': total, 'limit': limit, 'offset': offset,
+            'has_more': end < total, 'next_offset': end if end < total else None}
 
 
 class AuthenticatedTransport:
@@ -123,7 +140,9 @@ def register_crm_mcp(app, crm, **operations):
                                           ]})
                 return await fn(*args, **kwargs)
 
-            return server.tool(annotations=annotations, meta=meta)(guarded)
+            registered = server.tool(annotations=annotations, meta=meta)(guarded)
+            reject_unknown_arguments(server._tool_manager.get_tool(fn.__name__))
+            return registered
 
         return register
 
@@ -149,14 +168,17 @@ def register_crm_mcp(app, crm, **operations):
             raise ToolError('CRM operation failed') from None
 
     def page(items, limit, offset):
-        return {'items': items[offset:offset + limit], 'total': len(items)}
+        return paged(items[offset:offset + limit], len(items), limit, offset)
 
     @read
     async def search_orders(query: str = '', status: str = '', customer_id: int | None = None,
                             limit: Limit = 20, offset: Offset = 0) -> dict[str, Any]:
-        """Find orders by number, project, company or internal ID. Filter by CRM status or customer."""
-        return await invoke('search_orders', query.strip().casefold(), status.strip().casefold(),
-                            customer_id, limit, offset)
+        """Find orders by number, project, company or internal ID. Filter by CRM status or customer.
+        Returns one page, newest first: up to `limit` orders (default 20, max 100) starting at `offset`.
+        `total` counts every match; while `has_more` is true, call again with offset=`next_offset`."""
+        result = await invoke('search_orders', query.strip().casefold(), status.strip().casefold(),
+                              customer_id, limit, offset)
+        return paged(result['items'], result['total'], limit, offset)
 
     @read
     async def get_order(reference: str) -> dict[str, Any]:
